@@ -1,0 +1,466 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>MediScript AI - Real AI Prescription System</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+  <script src="config.js"></script>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: #f8f9fa; }
+    .modal { display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.5); z-index: 9999; align-items: center; justify-content: center; overflow-y: auto; }
+    .modal.active { display: flex; }
+    .toast { position: fixed; top: 80px; right: 20px; background: white; padding: 16px 20px; border-radius: 8px; box-shadow: 0 4px 12px rgba(0,0,0,0.15); z-index: 10000; display: none; align-items: center; gap: 12px; min-width: 300px; }
+    .toast.show { display: flex; animation: slideIn 0.3s; }
+    @keyframes slideIn { from { transform: translateX(400px); } to { transform: translateX(0); } }
+    .spinner { border: 3px solid #f3f3f3; border-top: 3px solid #3b82f6; border-radius: 50%; width: 40px; height: 40px; animation: spin 1s linear infinite; }
+    @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+    .voice-btn { background: #ef4444; color: white; border: none; border-radius: 50%; width: 50px; height: 50px; font-size: 24px; cursor: pointer; transition: all 0.2s; }
+    .voice-btn:hover { transform: scale(1.1); }
+    .voice-btn.recording { animation: pulse 1s infinite; }
+    @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.5; } }
+  </style>
+</head>
+<body>
+  <div id="app"></div>
+  <div class="toast" id="toast"><span id="toastIcon"></span><span id="toastMessage"></span></div>
+
+  <script>
+    // Check if API key is configured
+    if (!CONFIG || CONFIG.GROQ_API_KEY === 'YOUR_GROQ_API_KEY_HERE') {
+      alert('⚠️ Please configure your Groq API key in config.js file!');
+    }
+
+    // Database
+    let DB = JSON.parse(localStorage.getItem('mediscript_ai_db')) || {
+      patients: [
+        {id: 'p1', patientId: 'P001', name: 'Rajesh Kumar', age: 45, gender: 'Male', phone: '+919876543220', email: 'rajesh@example.com', medicalHistory: 'Hypertension, Type 2 Diabetes', allergies: 'Penicillin'},
+        {id: 'p2', patientId: 'P002', name: 'Priya Sharma', age: 32, gender: 'Female', phone: '+919876543221', email: 'priya@example.com', medicalHistory: 'Asthma', allergies: 'Sulfa drugs'},
+        {id: 'p3', patientId: 'P003', name: 'Kumar Vaibhav', age: 28, gender: 'Male', phone: '+919999456126', email: 'kumar@example.com', medicalHistory: 'None', allergies: 'Dust, Pollen'}
+      ],
+      appointments: [
+        {id: 'a1', patientId: 'p1', date: '2025-12-13', time: '10:00', reason: 'Regular checkup', status: 'Scheduled', token: 1},
+        {id: 'a2', patientId: 'p2', date: '2025-12-13', time: '11:00', reason: 'Follow-up', status: 'Scheduled', token: 2}
+      ],
+      prescriptions: [],
+      invoices: []
+    };
+
+    let currentScreen = 'dashboard';
+    let currentModal = null;
+    let currentEditId = null;
+    let recognition = null;
+
+    function saveDB() { localStorage.setItem('mediscript_ai_db', JSON.stringify(DB)); }
+
+    function showToast(message, type = 'success') {
+      const toast = document.getElementById('toast');
+      document.getElementById('toastIcon').textContent = type === 'success' ? '✅' : type === 'error' ? '❌' : '⚠️';
+      document.getElementById('toastMessage').textContent = message;
+      toast.classList.add('show');
+      setTimeout(() => toast.classList.remove('show'), 3000);
+    }
+
+    function openModal(modalHTML) {
+      const modal = document.createElement('div');
+      modal.className = 'modal active';
+      modal.innerHTML = '<div class="bg-white rounded-xl shadow-2xl w-full max-w-5xl max-h-[95vh] overflow-y-auto m-4">' + modalHTML + '</div>';
+      modal.onclick = (e) => { if (e.target === modal) closeModal(); };
+      document.body.appendChild(modal);
+      currentModal = modal;
+    }
+
+    function closeModal() {
+      if (currentModal) { 
+        if (recognition) recognition.stop();
+        currentModal.remove(); 
+        currentModal = null; 
+        currentEditId = null; 
+      }
+    }
+
+    // VOICE INPUT FUNCTIONALITY
+    function startVoiceInput(targetId) {
+      if (!('webkitSpeechRecognition' in window) && !('SpeechRecognition' in window)) {
+        showToast('Voice input not supported in this browser', 'error');
+        return;
+      }
+
+      const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+      recognition = new SpeechRecognition();
+      recognition.continuous = true;
+      recognition.interimResults = true;
+      recognition.lang = 'en-IN';
+
+      const btn = document.getElementById('voiceBtn');
+      const textarea = document.getElementById(targetId);
+      
+      btn.classList.add('recording');
+      btn.textContent = '⏹️';
+      showToast('Listening... Speak now', 'info');
+
+      recognition.onresult = (event) => {
+        let transcript = '';
+        for (let i = event.resultIndex; i < event.results.length; i++) {
+          transcript += event.results[i][0].transcript;
+        }
+        textarea.value = transcript;
+      };
+
+      recognition.onerror = (event) => {
+        showToast('Voice input error: ' + event.error, 'error');
+        btn.classList.remove('recording');
+        btn.textContent = '🎤';
+      };
+
+      recognition.onend = () => {
+        btn.classList.remove('recording');
+        btn.textContent = '🎤';
+        showToast('Voice input stopped', 'info');
+      };
+
+      recognition.start();
+    }
+
+    function stopVoiceInput() {
+      if (recognition) {
+        recognition.stop();
+      }
+    }
+
+    // REAL AI PRESCRIPTION GENERATION WITH GROQ
+    async function callGroqAPI(patient, diagnosis) {
+      const systemPrompt = 'You are an expert medical AI assistant specializing in evidence-based prescription generation. Analyze patient data comprehensively and suggest appropriate medications. Always consider: 1) Patient age, gender, and medical history 2) Known allergies and contraindications 3) Potential drug interactions 4) Age-appropriate dosages 5) Standard treatment protocols and guidelines. Respond ONLY with a valid JSON array of medicines. Each medicine object must have exactly these fields: medicine (full medicine name), dosage (specific amount like "500mg" or "10mg"), frequency (use standard abbreviations: OD=once daily, BD=twice daily, TDS=thrice daily, QID=four times daily), duration (e.g., "3 days", "7 days", "14 days"), instructions (when to take: "After food", "Before sleep", "Empty stomach", etc.). Example format: [{"medicine":"Paracetamol","dosage":"650mg","frequency":"TDS","duration":"3 days","instructions":"After food"}]';
+
+      const userPrompt = 'Patient Information:\n- Name: ' + patient.name + '\n- Age: ' + patient.age + ' years\n- Gender: ' + patient.gender + '\n- Medical History: ' + (patient.medicalHistory || 'None') + '\n- Known Allergies: ' + (patient.allergies || 'None') + '\n\nCurrent Symptoms/Diagnosis: ' + diagnosis + '\n\nPlease suggest an appropriate prescription considering the patient\'s medical history and allergies. Provide 2-4 medicines as clinically appropriate.';
+
+      try {
+        const response = await fetch(CONFIG.GROQ_API_URL, {
+          method: 'POST',
+          headers: {
+            'Authorization': 'Bearer ' + CONFIG.GROQ_API_KEY,
+            'Content-Type': 'application/json'
+          },
+          body: JSON.stringify({
+            model: CONFIG.GROQ_MODEL,
+            messages: [
+              { role: 'system', content: systemPrompt },
+              { role: 'user', content: userPrompt }
+            ],
+            temperature: 0.7,
+            max_tokens: 1500,
+            top_p: 1,
+            stream: false
+          })
+        });
+
+        if (!response.ok) {
+          const errorData = await response.json();
+          throw new Error('Groq API error: ' + (errorData.error?.message || response.status));
+        }
+
+        const data = await response.json();
+        const aiResponse = data.choices[0].message.content;
+        
+        const jsonMatch = aiResponse.match(/\[[\s\S]*\]/);
+        if (jsonMatch) {
+          return JSON.parse(jsonMatch[0]);
+        } else {
+          throw new Error('Invalid AI response format. Please try again.');
+        }
+      } catch (error) {
+        console.error('Groq API Error:', error);
+        throw error;
+      }
+    }
+
+    // PATIENT MANAGEMENT
+    function managePatient(editId) {
+      const patient = editId ? DB.patients.find(p => p.id === editId) : null;
+      currentEditId = editId;
+      
+      openModal('<div class="p-6 border-b border-gray-200"><div class="flex items-center justify-between"><h2 class="text-2xl font-bold text-gray-800">' + (editId ? '✏️ Edit Patient' : '👤 Register Patient') + '</h2><button onclick="closeModal()" class="text-gray-400 hover:text-gray-600 text-2xl">×</button></div></div><form onsubmit="event.preventDefault(); savePatient();" class="p-6"><div class="grid grid-cols-2 gap-4 mb-4"><div><label class="block text-sm font-semibold text-gray-700 mb-2">Full Name *</label><input type="text" id="patName" value="' + (patient?.name || '') + '" class="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500" required></div><div><label class="block text-sm font-semibold text-gray-700 mb-2">Age *</label><input type="number" id="patAge" value="' + (patient?.age || '') + '" class="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500" required min="1" max="120"></div></div><div class="grid grid-cols-2 gap-4 mb-4"><div><label class="block text-sm font-semibold text-gray-700 mb-2">Gender *</label><select id="patGender" class="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500" required><option value="">Select</option><option ' + (patient?.gender === 'Male' ? 'selected' : '') + '>Male</option><option ' + (patient?.gender === 'Female' ? 'selected' : '') + '>Female</option></select></div><div><label class="block text-sm font-semibold text-gray-700 mb-2">Phone *</label><input type="tel" id="patPhone" value="' + (patient?.phone || '') + '" class="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500" required></div></div><div class="mb-4"><label class="block text-sm font-semibold text-gray-700 mb-2">Email</label><input type="email" id="patEmail" value="' + (patient?.email || '') + '" class="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500"></div><div class="mb-4"><label class="block text-sm font-semibold text-gray-700 mb-2">Medical History</label><textarea id="patHistory" class="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500" rows="2" placeholder="e.g., Hypertension, Diabetes, Asthma">' + (patient?.medicalHistory || '') + '</textarea></div><div class="mb-6"><label class="block text-sm font-semibold text-gray-700 mb-2">Allergies (Important for AI)</label><textarea id="patAllergies" class="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500" rows="2" placeholder="e.g., Penicillin, Sulfa drugs, Pollen">' + (patient?.allergies || '') + '</textarea></div><div class="flex gap-3"><button type="submit" class="flex-1 px-6 py-3 bg-green-500 hover:bg-green-600 text-white font-semibold rounded-lg transition">' + (editId ? 'Update' : 'Save') + ' Patient</button><button type="button" onclick="closeModal()" class="px-6 py-3 bg-gray-500 hover:bg-gray-600 text-white font-semibold rounded-lg transition">Cancel</button></div></form>');
+    }
+
+    function savePatient() {
+      const data = {
+        name: document.getElementById('patName').value.trim(),
+        age: parseInt(document.getElementById('patAge').value),
+        gender: document.getElementById('patGender').value,
+        phone: document.getElementById('patPhone').value.trim(),
+        email: document.getElementById('patEmail').value.trim(),
+        medicalHistory: document.getElementById('patHistory').value.trim(),
+        allergies: document.getElementById('patAllergies').value.trim()
+      };
+
+      if (currentEditId) {
+        const index = DB.patients.findIndex(p => p.id === currentEditId);
+        DB.patients[index] = {...DB.patients[index], ...data};
+        showToast('Patient updated successfully!');
+      } else {
+        const patient = { id: 'p' + Date.now(), patientId: 'P' + String(DB.patients.length + 1).padStart(3, '0'), ...data };
+        DB.patients.push(patient);
+        showToast('Patient registered successfully!');
+      }
+      
+      saveDB();
+      closeModal();
+      if (currentScreen === 'patients') renderPatients();
+      if (currentScreen === 'dashboard') renderContent();
+    }
+
+    function deletePatient(id) {
+      if (confirm('Delete this patient? This will also delete all associated appointments and prescriptions.')) {
+        DB.patients = DB.patients.filter(p => p.id !== id);
+        DB.appointments = DB.appointments.filter(a => a.patientId !== id);
+        DB.prescriptions = DB.prescriptions.filter(rx => rx.patientId !== id);
+        saveDB();
+        showToast('Patient deleted');
+        renderPatients();
+      }
+    }
+
+    // APPOINTMENT MANAGEMENT
+    function manageAppointment(editId) {
+      const appt = editId ? DB.appointments.find(a => a.id === editId) : null;
+      currentEditId = editId;
+      
+      openModal('<div class="p-6 border-b border-gray-200"><div class="flex items-center justify-between"><h2 class="text-2xl font-bold text-gray-800">' + (editId ? '✏️ Edit Appointment' : '📅 Book Appointment') + '</h2><button onclick="closeModal()" class="text-gray-400 hover:text-gray-600 text-2xl">×</button></div></div><form onsubmit="event.preventDefault(); saveAppointment();" class="p-6"><div class="mb-4"><label class="block text-sm font-semibold text-gray-700 mb-2">Patient *</label><select id="apptPatient" class="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500" required><option value="">Select Patient</option>' + DB.patients.map(p => '<option value="' + p.id + '" ' + (appt?.patientId === p.id ? 'selected' : '') + '>' + p.patientId + ' - ' + p.name + '</option>').join('') + '</select></div><div class="grid grid-cols-2 gap-4 mb-4"><div><label class="block text-sm font-semibold text-gray-700 mb-2">Date *</label><input type="date" id="apptDate" value="' + (appt?.date || '') + '" class="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500" required></div><div><label class="block text-sm font-semibold text-gray-700 mb-2">Time *</label><input type="time" id="apptTime" value="' + (appt?.time || '') + '" class="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500" required></div></div><div class="mb-6"><label class="block text-sm font-semibold text-gray-700 mb-2">Reason</label><textarea id="apptReason" class="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500" rows="2" placeholder="e.g., Regular checkup, Follow-up consultation">' + (appt?.reason || '') + '</textarea></div><div class="flex gap-3"><button type="submit" class="flex-1 px-6 py-3 bg-green-500 hover:bg-green-600 text-white font-semibold rounded-lg transition">' + (editId ? 'Update' : 'Book') + ' Appointment</button><button type="button" onclick="closeModal()" class="px-6 py-3 bg-gray-500 hover:bg-gray-600 text-white font-semibold rounded-lg transition">Cancel</button></div></form>');
+    }
+
+    function saveAppointment() {
+      const data = {
+        patientId: document.getElementById('apptPatient').value,
+        date: document.getElementById('apptDate').value,
+        time: document.getElementById('apptTime').value,
+        reason: document.getElementById('apptReason').value,
+        status: 'Scheduled'
+      };
+
+      if (currentEditId) {
+        const index = DB.appointments.findIndex(a => a.id === currentEditId);
+        DB.appointments[index] = {...DB.appointments[index], ...data};
+        showToast('Appointment updated!');
+      } else {
+        const appt = { id: 'a' + Date.now(), ...data, token: DB.appointments.filter(a => a.date === data.date).length + 1 };
+        DB.appointments.push(appt);
+        showToast('Appointment booked! Token #' + appt.token);
+      }
+      
+      saveDB();
+      closeModal();
+      if (currentScreen === 'appointments') renderAppointments();
+      if (currentScreen === 'dashboard') renderContent();
+    }
+
+    function deleteAppointment(id) {
+      if (confirm('Cancel this appointment?')) {
+        DB.appointments = DB.appointments.filter(a => a.id !== id);
+        saveDB();
+        showToast('Appointment cancelled');
+        renderAppointments();
+      }
+    }
+
+    // AI PRESCRIPTION GENERATOR
+    function generatePrescription(patientId) {
+      const patient = DB.patients.find(p => p.id === patientId);
+      
+      openModal('<div class="p-6 border-b border-gray-200"><div class="flex items-center justify-between"><h2 class="text-2xl font-bold text-gray-800">🤖 AI Prescription Generator</h2><button onclick="closeModal()" class="text-gray-400 hover:text-gray-600 text-2xl">×</button></div></div><div class="p-6"><div class="bg-blue-50 border border-blue-200 rounded-lg p-4 mb-6"><p class="text-sm font-semibold text-blue-800">Patient: ' + patient.name + ' | Age: ' + patient.age + ' | Gender: ' + patient.gender + '</p><p class="text-xs text-blue-600 mt-1">Medical History: ' + (patient.medicalHistory || 'None') + ' | Allergies: ' + (patient.allergies || 'None') + '</p></div><div class="mb-4"><div class="flex items-center justify-between mb-2"><label class="block text-sm font-semibold text-gray-700">Symptoms / Diagnosis *</label><button type="button" id="voiceBtn" onclick="toggleVoice()" class="voice-btn" title="Voice Input">🎤</button></div><textarea id="aiDiagnosis" class="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500" rows="4" placeholder="Describe symptoms in detail. Example:&#10;- Fever (102°F) for 3 days&#10;- Severe headache&#10;- Body ache&#10;- Weakness&#10;&#10;Or click 🎤 to use voice input" required></textarea></div><button onclick="generateAIPrescription(\'' + patientId + '\')" class="w-full px-6 py-3 bg-gradient-to-r from-blue-500 to-purple-600 hover:from-blue-600 hover:to-purple-700 text-white font-semibold rounded-lg transition mb-4">🤖 Generate AI Prescription (Powered by Groq Llama 3.1 70B)</button><div id="aiLoading" class="hidden text-center py-8"><div class="spinner mx-auto mb-4"></div><p class="text-gray-600 font-semibold">🤖 AI is analyzing patient data...</p><p class="text-sm text-gray-500 mt-2">Considering medical history, allergies, and symptoms</p></div><div id="aiResult" class="hidden"><div class="bg-green-50 border border-green-200 rounded-lg p-4 mb-4"><p class="text-sm font-semibold text-green-800 mb-3">✅ AI Prescription Generated Successfully</p><div id="aiPrescriptionList"></div></div><button onclick="savePrescription(\'' + patientId + '\')" class="w-full px-6 py-3 bg-green-500 hover:bg-green-600 text-white font-semibold rounded-lg transition">💾 Save & Generate PDF</button></div><div id="aiError" class="hidden"><div class="bg-red-50 border border-red-200 rounded-lg p-4"><p class="text-sm font-semibold text-red-800 mb-2">❌ Error Generating Prescription</p><p class="text-xs text-red-600" id="aiErrorMessage"></p><button onclick="document.getElementById(\'aiError\').classList.add(\'hidden\')" class="mt-2 px-4 py-2 bg-red-500 text-white rounded-lg text-sm">Try Again</button></div></div></div>');
+    }
+
+    function toggleVoice() {
+      const btn = document.getElementById('voiceBtn');
+      if (btn.classList.contains('recording')) {
+        stopVoiceInput();
+      } else {
+        startVoiceInput('aiDiagnosis');
+      }
+    }
+
+    async function generateAIPrescription(patientId) {
+      const patient = DB.patients.find(p => p.id === patientId);
+      const diagnosis = document.getElementById('aiDiagnosis').value.trim();
+      
+      if (!diagnosis) {
+        showToast('Please enter symptoms/diagnosis', 'error');
+        return;
+      }
+
+      if (CONFIG.GROQ_API_KEY === 'YOUR_GROQ_API_KEY_HERE') {
+        showToast('Please configure Groq API key in config.js', 'error');
+        return;
+      }
+
+      document.getElementById('aiLoading').classList.remove('hidden');
+      document.getElementById('aiResult').classList.add('hidden');
+      document.getElementById('aiError').classList.add('hidden');
+
+      try {
+        const aiPrescription = await callGroqAPI(patient, diagnosis);
+
+        let html = '<table class="w-full text-sm border-collapse"><thead><tr class="border-b-2 border-gray-300"><th class="text-left py-2 px-2 font-semibold">Medicine</th><th class="text-left py-2 px-2 font-semibold">Dosage</th><th class="text-left py-2 px-2 font-semibold">Frequency</th><th class="text-left py-2 px-2 font-semibold">Duration</th><th class="text-left py-2 px-2 font-semibold">Instructions</th></tr></thead><tbody>';
+        aiPrescription.forEach(med => {
+          html += '<tr class="border-b border-gray-200"><td class="py-2 px-2 font-medium">' + med.medicine + '</td><td class="py-2 px-2">' + med.dosage + '</td><td class="py-2 px-2">' + med.frequency + '</td><td class="py-2 px-2">' + med.duration + '</td><td class="py-2 px-2 text-xs">' + med.instructions + '</td></tr>';
+        });
+        html += '</tbody></table>';
+
+        document.getElementById('aiPrescriptionList').innerHTML = html;
+        document.getElementById('aiLoading').classList.add('hidden');
+        document.getElementById('aiResult').classList.remove('hidden');
+        
+        window.currentAIPrescription = { diagnosis: diagnosis, medicines: aiPrescription };
+        
+        showToast('AI Prescription generated successfully!', 'success');
+      } catch (error) {
+        console.error('AI Generation Error:', error);
+        document.getElementById('aiLoading').classList.add('hidden');
+        document.getElementById('aiError').classList.remove('hidden');
+        document.getElementById('aiErrorMessage').textContent = error.message || 'Failed to generate prescription. Please check your API key and try again.';
+        showToast('Failed to generate prescription', 'error');
+      }
+    }
+
+    function savePrescription(patientId) {
+      if (!window.currentAIPrescription) return;
+      
+      const prescription = {
+        id: 'rx' + Date.now(),
+        patientId: patientId,
+        diagnosis: window.currentAIPrescription.diagnosis,
+        medicines: window.currentAIPrescription.medicines,
+        createdAt: new Date().toISOString()
+      };
+      
+      DB.prescriptions.push(prescription);
+      saveDB();
+      
+      generatePDF(prescription);
+      closeModal();
+      showToast('Prescription saved & PDF generated!', 'success');
+      if (currentScreen === 'dashboard') renderContent();
+    }
+
+    function generatePDF(prescription) {
+      const patient = DB.patients.find(p => p.id === prescription.patientId);
+      const { jsPDF } = window.jspdf;
+      const doc = new jsPDF();
+
+      doc.setFontSize(22);
+      doc.setTextColor(20, 120, 240);
+      doc.text(CONFIG.CLINIC_INFO.name, 105, 20, { align: 'center' });
+      
+      doc.setFontSize(11);
+      doc.setTextColor(100);
+      doc.text('AI-Powered Prescription System', 105, 28, { align: 'center' });
+      doc.text(CONFIG.CLINIC_INFO.doctor + ' | ' + CONFIG.CLINIC_INFO.qualification + ' | Reg. No: ' + CONFIG.CLINIC_INFO.registration, 105, 34, { align: 'center' });
+      doc.text(CONFIG.CLINIC_INFO.address + ' | Phone: ' + CONFIG.CLINIC_INFO.phone, 105, 40, { align: 'center' });
+      
+      doc.setDrawColor(200);
+      doc.line(20, 45, 190, 45);
+
+      doc.setFontSize(12);
+      doc.setTextColor(0);
+      doc.text('Patient: ' + patient.name, 20, 55);
+      doc.text('Age: ' + patient.age + ' | Gender: ' + patient.gender, 20, 62);
+      doc.text('Patient ID: ' + patient.patientId, 150, 55);
+      doc.text('Date: ' + new Date().toLocaleDateString('en-IN'), 150, 62);
+
+      doc.setFontSize(10);
+      doc.setTextColor(100);
+      doc.text('Medical History: ' + (patient.medicalHistory || 'None'), 20, 70);
+      doc.text('Allergies: ' + (patient.allergies || 'None'), 20, 76);
+
+      doc.setDrawColor(200);
+      doc.line(20, 80, 190, 80);
+
+      doc.setFontSize(11);
+      doc.setTextColor(0);
+      doc.text('Diagnosis:', 20, 88);
+      doc.setFontSize(10);
+      const diagnosisLines = doc.splitTextToSize(prescription.diagnosis, 170);
+      doc.text(diagnosisLines, 20, 95);
+
+      let y = 95 + (diagnosisLines.length * 5) + 10;
+      doc.setFontSize(12);
+      doc.setTextColor(20, 120, 240);
+      doc.text('Rx', 20, y);
+      
+      y += 8;
+      prescription.medicines.forEach((med, i) => {
+        doc.setFontSize(10);
+        doc.setTextColor(0);
+        doc.text((i + 1) + '. ' + med.medicine, 25, y);
+        doc.setFontSize(9);
+        doc.setTextColor(60);
+        doc.text('   ' + med.dosage + ' | ' + med.frequency + ' | ' + med.duration, 25, y + 5);
+        doc.text('   ' + med.instructions, 25, y + 10);
+        doc.setTextColor(0);
+        y += 18;
+      });
+
+      doc.setDrawColor(200);
+      doc.line(20, 270, 190, 270);
+      doc.setFontSize(9);
+      doc.setTextColor(100);
+      doc.text('This is an AI-generated prescription. Please consult your doctor for any concerns.', 105, 278, { align: 'center' });
+      doc.text('Digital Signature: ' + CONFIG.CLINIC_INFO.doctor, 105, 285, { align: 'center' });
+
+      doc.save('Prescription_' + patient.patientId + '_' + Date.now() + '.pdf');
+    }
+
+    // RENDER FUNCTIONS
+    function render() {
+      const app = document.getElementById('app');
+      app.innerHTML = '<header class="bg-white border-b border-gray-200 px-8 py-4 sticky top-0 z-50 shadow-sm"><div class="flex items-center justify-between"><div class="flex items-center gap-3"><div class="w-10 h-10 bg-gradient-to-r from-blue-500 to-purple-600 rounded-lg flex items-center justify-center"><span class="text-white text-2xl">🤖</span></div><div><h1 class="text-xl font-bold text-gray-800">MediScript AI</h1><p class="text-xs text-gray-500">Powered by Groq Llama 3.1 70B</p></div></div><div class="flex items-center gap-4"><span class="px-3 py-1 bg-green-100 text-green-700 text-xs font-semibold rounded-full">✅ Real AI Active</span><div class="text-right"><p class="text-sm font-semibold text-gray-800">' + CONFIG.CLINIC_INFO.doctor + '</p><p class="text-xs text-gray-500">' + CONFIG.CLINIC_INFO.qualification + '</p></div></div></div></header><div class="flex"><aside class="w-64 bg-white border-r border-gray-200 min-h-screen"><div class="p-6"><button onclick="switchScreen(\'dashboard\')" class="w-full flex items-center gap-3 px-4 py-3 rounded-lg mb-2 transition ' + (currentScreen === 'dashboard' ? 'bg-blue-50 text-blue-600 font-semibold border-l-4 border-blue-500' : 'text-gray-700 hover:bg-gray-50') + '"><span class="text-xl">📊</span><span class="text-sm">Dashboard</span></button><button onclick="switchScreen(\'patients\')" class="w-full flex items-center gap-3 px-4 py-3 rounded-lg mb-2 transition ' + (currentScreen === 'patients' ? 'bg-blue-50 text-blue-600 font-semibold border-l-4 border-blue-500' : 'text-gray-700 hover:bg-gray-50') + '"><span class="text-xl">👥</span><span class="text-sm">Patients</span></button><button onclick="switchScreen(\'appointments\')" class="w-full flex items-center gap-3 px-4 py-3 rounded-lg mb-2 transition ' + (currentScreen === 'appointments' ? 'bg-blue-50 text-blue-600 font-semibold border-l-4 border-blue-500' : 'text-gray-700 hover:bg-gray-50') + '"><span class="text-xl">📅</span><span class="text-sm">Appointments</span></button><button onclick="switchScreen(\'prescriptions\')" class="w-full flex items-center gap-3 px-4 py-3 rounded-lg mb-2 transition ' + (currentScreen === 'prescriptions' ? 'bg-blue-50 text-blue-600 font-semibold border-l-4 border-blue-500' : 'text-gray-700 hover:bg-gray-50') + '"><span class="text-xl">💊</span><span class="text-sm">Prescriptions</span></button></div></aside><main class="flex-1 p-8" id="content"></main></div>';
+
+      renderContent();
+    }
+
+    function renderContent() {
+      const content = document.getElementById('content');
+      
+      if (currentScreen === 'dashboard') {
+        content.innerHTML = '<div class="mb-8"><h1 class="text-3xl font-bold text-gray-800">Dashboard</h1><p class="text-gray-600 mt-1">Welcome to MediScript AI - Real AI-Powered Prescription System</p></div><div class="grid grid-cols-1 md:grid-cols-4 gap-6 mb-8"><div class="bg-white rounded-xl shadow-sm border border-gray-200 p-6 hover:shadow-md transition cursor-pointer" onclick="switchScreen(\'patients\')"><span class="text-4xl">👥</span><p class="text-gray-600 text-sm font-medium mt-4">Total Patients</p><p class="text-3xl font-bold text-gray-800 mt-2">' + DB.patients.length + '</p></div><div class="bg-white rounded-xl shadow-sm border border-gray-200 p-6 hover:shadow-md transition cursor-pointer" onclick="switchScreen(\'appointments\')"><span class="text-4xl">📅</span><p class="text-gray-600 text-sm font-medium mt-4">Appointments</p><p class="text-3xl font-bold text-gray-800 mt-2">' + DB.appointments.length + '</p></div><div class="bg-white rounded-xl shadow-sm border border-gray-200 p-6 hover:shadow-md transition cursor-pointer" onclick="switchScreen(\'prescriptions\')"><span class="text-4xl">💊</span><p class="text-gray-600 text-sm font-medium mt-4">AI Prescriptions</p><p class="text-3xl font-bold text-gray-800 mt-2">' + DB.prescriptions.length + '</p></div><div class="bg-white rounded-xl shadow-sm border border-gray-200 p-6 hover:shadow-md transition"><span class="text-4xl">💰</span><p class="text-gray-600 text-sm font-medium mt-4">Revenue</p><p class="text-3xl font-bold text-gray-800 mt-2">₹' + DB.invoices.reduce((sum, i) => sum + (i.total || 0), 0) + '</p></div></div><div class="bg-white rounded-xl shadow-sm border border-gray-200 p-6 mb-8"><h2 class="text-xl font-bold text-gray-800 mb-4">🚀 Quick Actions</h2><div class="grid grid-cols-2 md:grid-cols-4 gap-4"><button onclick="managePatient()" class="px-6 py-4 bg-blue-500 hover:bg-blue-600 text-white font-semibold rounded-lg transition">👤 Register Patient</button><button onclick="manageAppointment()" class="px-6 py-4 bg-green-500 hover:bg-green-600 text-white font-semibold rounded-lg transition">📅 Book Appointment</button><button onclick="generatePrescription(\'' + (DB.patients[0]?.id || '') + '\')" class="px-6 py-4 bg-gradient-to-r from-blue-500 to-purple-600 hover:from-blue-600 hover:to-purple-700 text-white font-semibold rounded-lg transition">🤖 AI Prescription</button><button onclick="alert(\'Coming in Phase 2!\')" class="px-6 py-4 bg-yellow-500 hover:bg-yellow-600 text-white font-semibold rounded-lg transition">💰 Generate Invoice</button></div></div><div class="bg-gradient-to-r from-blue-500 to-purple-600 rounded-xl shadow-lg p-8 text-white"><h2 class="text-2xl font-bold mb-2">✅ Phase 1 Complete - Real AI Active!</h2><p class="text-blue-100 mb-4">Your system now uses Groq Llama 3.1 70B for real AI-powered prescription generation. 100% free, fast, and production-ready!</p><div class="flex flex-wrap gap-4"><div class="bg-white/20 rounded-lg px-4 py-2"><p class="text-sm">✅ Real AI (Groq Llama 3.1)</p></div><div class="bg-white/20 rounded-lg px-4 py-2"><p class="text-sm">✅ Voice Input (Web Speech API)</p></div><div class="bg-white/20 rounded-lg px-4 py-2"><p class="text-sm">✅ Patient Management</p></div><div class="bg-white/20 rounded-lg px-4 py-2"><p class="text-sm">✅ Appointments</p></div><div class="bg-white/20 rounded-lg px-4 py-2"><p class="text-sm">✅ PDF Generation</p></div></div></div>';
+      } else if (currentScreen === 'patients') {
+        renderPatients();
+      } else if (currentScreen === 'appointments') {
+        renderAppointments();
+      } else if (currentScreen === 'prescriptions') {
+        renderPrescriptions();
+      }
+    }
+
+    function renderPatients() {
+      const content = document.getElementById('content');
+      content.innerHTML = '<div class="flex items-center justify-between mb-8"><div><h1 class="text-3xl font-bold text-gray-800">Patients</h1><p class="text-gray-600 mt-1">Manage patient records with AI-powered prescriptions</p></div><button onclick="managePatient()" class="px-6 py-3 bg-blue-500 hover:bg-blue-600 text-white font-semibold rounded-lg transition">👤 Register Patient</button></div><div class="bg-white rounded-xl shadow-sm border border-gray-200 p-6"><div class="overflow-x-auto"><table class="w-full"><thead><tr class="border-b border-gray-200"><th class="text-left py-3 px-4 font-semibold text-gray-700">ID</th><th class="text-left py-3 px-4 font-semibold text-gray-700">Name</th><th class="text-left py-3 px-4 font-semibold text-gray-700">Age</th><th class="text-left py-3 px-4 font-semibold text-gray-700">Gender</th><th class="text-left py-3 px-4 font-semibold text-gray-700">Contact</th><th class="text-left py-3 px-4 font-semibold text-gray-700">Actions</th></tr></thead><tbody>' + DB.patients.map(p => '<tr class="border-b border-gray-100 hover:bg-gray-50"><td class="py-3 px-4"><span class="px-3 py-1 bg-blue-100 text-blue-700 text-xs font-semibold rounded-full">' + p.patientId + '</span></td><td class="py-3 px-4 font-semibold text-gray-800">' + p.name + '</td><td class="py-3 px-4 text-gray-600">' + p.age + 'Y</td><td class="py-3 px-4 text-gray-600">' + p.gender + '</td><td class="py-3 px-4 text-gray-600">' + p.phone + '</td><td class="py-3 px-4"><div class="flex gap-2"><button onclick="generatePrescription(\'' + p.id + '\')" class="px-3 py-1 bg-gradient-to-r from-blue-500 to-purple-600 hover:from-blue-600 hover:to-purple-700 text-white text-sm font-semibold rounded transition">🤖 AI Rx</button><button onclick="managePatient(\'' + p.id + '\')" class="px-3 py-1 bg-blue-500 hover:bg-blue-600 text-white text-sm font-semibold rounded transition">Edit</button><button onclick="deletePatient(\'' + p.id + '\')" class="px-3 py-1 bg-red-500 hover:bg-red-600 text-white text-sm font-semibold rounded transition">Delete</button></div></td></tr>').join('') + '</tbody></table></div></div>';
+    }
+
+    function renderAppointments() {
+      const content = document.getElementById('content');
+      content.innerHTML = '<div class="flex items-center justify-between mb-8"><div><h1 class="text-3xl font-bold text-gray-800">Appointments</h1><p class="text-gray-600 mt-1">Manage appointments & scheduling</p></div><button onclick="manageAppointment()" class="px-6 py-3 bg-green-500 hover:bg-green-600 text-white font-semibold rounded-lg transition">📅 Book Appointment</button></div><div class="bg-white rounded-xl shadow-sm border border-gray-200 p-6"><div class="overflow-x-auto"><table class="w-full"><thead><tr class="border-b border-gray-200"><th class="text-left py-3 px-4 font-semibold text-gray-700">Token</th><th class="text-left py-3 px-4 font-semibold text-gray-700">Date</th><th class="text-left py-3 px-4 font-semibold text-gray-700">Time</th><th class="text-left py-3 px-4 font-semibold text-gray-700">Patient</th><th class="text-left py-3 px-4 font-semibold text-gray-700">Reason</th><th class="text-left py-3 px-4 font-semibold text-gray-700">Status</th><th class="text-left py-3 px-4 font-semibold text-gray-700">Actions</th></tr></thead><tbody>' + DB.appointments.map(a => {
+        const patient = DB.patients.find(p => p.id === a.patientId);
+        return '<tr class="border-b border-gray-100 hover:bg-gray-50"><td class="py-3 px-4"><span class="px-3 py-1 bg-blue-100 text-blue-700 text-xs font-bold rounded-full">#' + a.token + '</span></td><td class="py-3 px-4 text-gray-600">' + a.date + '</td><td class="py-3 px-4 text-gray-600">' + a.time + '</td><td class="py-3 px-4 font-semibold text-gray-800">' + (patient ? patient.name : 'Unknown') + '</td><td class="py-3 px-4 text-gray-600">' + a.reason + '</td><td class="py-3 px-4"><span class="px-3 py-1 bg-green-100 text-green-700 text-xs font-semibold rounded-full">' + a.status + '</span></td><td class="py-3 px-4"><div class="flex gap-2"><button onclick="manageAppointment(\'' + a.id + '\')" class="px-3 py-1 bg-blue-500 hover:bg-blue-600 text-white text-sm font-semibold rounded transition">Edit</button><button onclick="deleteAppointment(\'' + a.id + '\')" class="px-3 py-1 bg-red-500 hover:bg-red-600 text-white text-sm font-semibold rounded transition">Cancel</button></div></td></tr>';
+      }).join('') + '</tbody></table></div></div>';
+    }
+
+    function renderPrescriptions() {
+      const content = document.getElementById('content');
+      content.innerHTML = '<div class="mb-8"><h1 class="text-3xl font-bold text-gray-800">AI Prescriptions</h1><p class="text-gray-600 mt-1">View all AI-generated prescriptions</p></div><div class="bg-white rounded-xl shadow-sm border border-gray-200 p-6">' + (DB.prescriptions.length === 0 ? '<div class="text-center py-12"><span class="text-6xl">💊</span><p class="text-gray-600 mt-4 font-semibold">No prescriptions yet</p><p class="text-sm text-gray-500 mt-2">Generate your first AI prescription from the Patients page</p><button onclick="switchScreen(\'patients\')" class="mt-4 px-6 py-3 bg-gradient-to-r from-blue-500 to-purple-600 hover:from-blue-600 hover:to-purple-700 text-white font-semibold rounded-lg transition">Go to Patients</button></div>' : '<div class="overflow-x-auto"><table class="w-full"><thead><tr class="border-b border-gray-200"><th class="text-left py-3 px-4 font-semibold text-gray-700">Date</th><th class="text-left py-3 px-4 font-semibold text-gray-700">Patient</th><th class="text-left py-3 px-4 font-semibold text-gray-700">Diagnosis</th><th class="text-left py-3 px-4 font-semibold text-gray-700">Medicines</th><th class="text-left py-3 px-4 font-semibold text-gray-700">Actions</th></tr></thead><tbody>' + DB.prescriptions.map(rx => {
+        const patient = DB.patients.find(p => p.id === rx.patientId);
+        return '<tr class="border-b border-gray-100 hover:bg-gray-50"><td class="py-3 px-4 text-gray-600">' + new Date(rx.createdAt).toLocaleDateString('en-IN') + '</td><td class="py-3 px-4 font-semibold text-gray-800">' + (patient ? patient.name : 'Unknown') + '</td><td class="py-3 px-4 text-gray-600 text-sm">' + rx.diagnosis.substring(0, 50) + '...</td><td class="py-3 px-4"><span class="px-3 py-1 bg-purple-100 text-purple-700 text-xs font-semibold rounded-full">' + rx.medicines.length + ' medicines</span></td><td class="py-3 px-4"><button onclick=\'generatePDF(' + JSON.stringify(rx).replace(/'/g, "\\'") + ')\' class="px-3 py-1 bg-blue-500 hover:bg-blue-600 text-white text-sm font-semibold rounded transition">📄 Download PDF</button></td></tr>';
+      }).join('') + '</tbody></table></div>') + '</div>';
+    }
+
+    function switchScreen(screen) {
+      currentScreen = screen;
+      render();
+    }
+
+    render();
+    console.log('✅ MediScript AI v2 - Real AI Active with Groq Llama 3.1 70B!');
+  </script>
+</body>
+</html>
