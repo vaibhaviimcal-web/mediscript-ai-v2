@@ -2,7 +2,7 @@
 // Add your Groq API key here
 
 const CONFIG = {
-  GROQ_API_KEY: 'YOUR_GROQ_API_KEY_HERE', // Replace with your actual key
+  GROQ_API_KEY: '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', // Replace with your actual key
   GROQ_API_URL: 'https://api.groq.com/openai/v1/chat/completions',
   GROQ_MODEL: 'llama-3.1-70b-versatile',
   
