@@ -1,13 +1,14 @@
 // Firebase Configuration
-// Replace with your Firebase project credentials from Firebase Console
+// MediScript AI - Production Firebase Project
 
 const firebaseConfig = {
-  apiKey: "YOUR_FIREBASE_API_KEY",
-  authDomain: "YOUR_PROJECT_ID.firebaseapp.com",
-  projectId: "YOUR_PROJECT_ID",
-  storageBucket: "YOUR_PROJECT_ID.appspot.com",
-  messagingSenderId: "YOUR_MESSAGING_SENDER_ID",
-  appId: "YOUR_APP_ID"
+  apiKey: "AIzaSyAZH8VLSoUV5fZD9ptw1i6m3bTV3SZ5wGg",
+  authDomain: "mediscript-ai-78d2f.firebaseapp.com",
+  projectId: "mediscript-ai-78d2f",
+  storageBucket: "mediscript-ai-78d2f.firebasestorage.app",
+  messagingSenderId: "590655526128",
+  appId: "1:590655526128:web:bd52e56obddd562fe1e35",
+  measurementId: "G-TYTEEY9SFC"
 };
 
 // Initialize Firebase (will be loaded from CDN in index.html)
@@ -26,6 +27,7 @@ function initializeFirebase() {
     storage = firebase.storage();
     
     console.log('✅ Firebase initialized successfully');
+    console.log('📊 Project:', firebaseConfig.projectId);
     return true;
   } catch (error) {
     console.error('Firebase initialization error:', error);
